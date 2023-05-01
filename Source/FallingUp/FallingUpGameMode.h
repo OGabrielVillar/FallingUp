@@ -6,13 +6,14 @@
 #include "GameFramework/GameModeBase.h"
 #include "FallingUpGameMode.generated.h"
 
-UCLASS(minimalapi)
+UCLASS()
 class AFallingUpGameMode : public AGameModeBase
 {
 	GENERATED_BODY()
 
 public:
 	AFallingUpGameMode();
+
 };
 
 
