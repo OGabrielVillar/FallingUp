@@ -13,40 +13,31 @@
 
 AMainCharacter::AMainCharacter()
 	: ViewOrientation(ForceInit)
-	, GravityOrientation(FVector(0.f,0.f,-1.0).ToOrientationQuat())
+	, GravityDirection(0.f,0.f,-1.0)
 {
-	bAllowTickBeforeBeginPlay = false;
 	PrimaryActorTick.bCanEverTick = true;
+	bAllowTickBeforeBeginPlay = false;
 
-	// Set size for collision capsule
-	GetCapsuleComponent()->InitCapsuleSize(10.f, 10.0f);
-		
+	CapsuleComponent = CreateDefaultSubobject<UCapsuleComponent>(TEXT("CapsuleComponent"));
+	CapsuleComponent->InitCapsuleSize(25.f, 25.0f);
+	CapsuleComponent->SetCollisionProfileName(UCollisionProfile::Pawn_ProfileName);
+	CapsuleComponent->CanCharacterStepUpOn = ECB_No;
+	CapsuleComponent->SetShouldUpdatePhysicsVolume(true);
+	CapsuleComponent->SetCanEverAffectNavigation(false);
+	CapsuleComponent->bDynamicObstacle = true;
+	RootComponent = CapsuleComponent;
+	
 	// Create a CameraComponent	
-	FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
-	FirstPersonCamera->SetRelativeLocation(FVector(-3.f, 0.f, -13.f)); // Position the camera
-	FirstPersonCamera->SetupAttachment(GetCapsuleComponent());
-	FirstPersonCamera->bConstrainAspectRatio = false;
-
-	// Create a mesh component that will be used when being viewed from a '1st person' view (when controlling this pawn)
-	Mesh1P = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("CharacterMesh1P"));
-	Mesh1P->SetOnlyOwnerSee(true);
-	Mesh1P->SetupAttachment(GetCapsuleComponent());
-	Mesh1P->bCastDynamicShadow = false;
-	Mesh1P->CastShadow = false;
-	//Mesh1P->SetRelativeRotation(FRotator(0.9f, -19.19f, 5.2f));
-	Mesh1P->SetRelativeLocation(FVector(-30.f, 0.f, -150.f));
+	CameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("CameraComponent"));
+	CameraComponent->SetRelativeLocation(FVector(-3.f, 0.f, -13.f)); // Position the camera
+	CameraComponent->SetupAttachment(CapsuleComponent);
+	CameraComponent->bConstrainAspectRatio = false;
 }
 
 void AMainCharacter::BeginPlay()
 {
 	// Call the base class  
 	Super::BeginPlay();
-
-    // Set the character's gravity scale to zero
-    GetCharacterMovement()->GravityScale = 0.0f;
-
-    // Enable custom gravity
-    GetCharacterMovement()->SetPlaneConstraintEnabled(true);
 
 	//Add Input Mapping Context
 	if (APlayerController* PlayerController = Cast<APlayerController>(Controller))
@@ -59,59 +50,18 @@ void AMainCharacter::BeginPlay()
 		}
 	}
 
-	//GetCapsuleComponent()->OnInputTouchBegin.AddDynamic(this, &AMainCharacter::LogNothing0);
-	//GetCapsuleComponent()->OnComponentHit.AddDynamic(this, &AMainCharacter::LogNothing1);
-	//GetCapsuleComponent()->OnComponentBeginOverlap.AddDynamic(this, &AMainCharacter::LogNothing2);
-
+	CapsuleComponent->OnComponentSleep.AddDynamic(this, &AMainCharacter::OnBodySleep);
+	CapsuleComponent->OnComponentWake.AddDynamic(this, &AMainCharacter::OnBodyWake);
 }
 
 void AMainCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-
-	FVector GravityVector = GravityOrientation.Vector();
-
-	//LaunchCharacter(GravityVector * DeltaSeconds * 1000.f, false, false);
-
-    GetCharacterMovement()->MovementMode = EMovementMode::MOVE_Falling;
-    GetCharacterMovement()->Velocity += GravityVector * 10000.f * DeltaSeconds;
-    //GetCharacterMovement()->AddForce(GravityVector * 10000.f);
-
-    GetCharacterMovement()->SetPlaneConstraintNormal(-GravityVector);
-
-	float CapsuleRadius = GetCapsuleComponent()->GetScaledCapsuleRadius();
-
-	FVector TraceA = GetActorLocation();
-	FVector TraceB = TraceA + (1.4f * GravityOrientation.Vector() * GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
 	
-	FU_SCREEN_LOG("%i, %i", (int)GetCharacterMovement()->IsActive(), (int)GetCharacterMovement()->HasValidData());
+	if (bIsBodyWake)
+		GravityControlTick();
 
-	FHitResult HitResult;
-	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(Cast<AActor>(this));
-
-	GetWorld()->SweepSingleByChannel(
-		HitResult,
-		TraceA,
-		TraceB,
-		FQuat(ForceInit),
-		ECollisionChannel::ECC_Visibility,
-		FCollisionShape::MakeSphere(CapsuleRadius),
-		QueryParams
-	);
-
-	if (HitResult.bBlockingHit)
-	{
-		TraceB = HitResult.Location;
-		if (HitResult.Normal.Dot(GravityOrientation.Vector()))
-		{
-
-		};
-
-		const auto& Result = HitResult.Normal.Dot(GravityOrientation.Vector());
-		auto LogMsg = FString::SanitizeFloat(Result);
-		FU_SCREEN_LOG("%s", *LogMsg);
-	}
+	CapsuleComponent->SetPhysicsLinearVelocity(GravityDirection * 10.f, true);
 }
 
 //////////////////////////////////////////////////////////////////////////// Input
@@ -121,10 +71,6 @@ void AMainCharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInpu
 	// Set up action bindings
 	if (UEnhancedInputComponent* EnhancedInputComponent = CastChecked<UEnhancedInputComponent>(PlayerInputComponent))
 	{
-		//Jumping
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Triggered, this, &ACharacter::Jump);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
-
 		//Moving
 		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AMainCharacter::Move);
 
@@ -136,42 +82,101 @@ void AMainCharacter::SetupPlayerInputComponent(class UInputComponent* PlayerInpu
 
 void AMainCharacter::Move(const FInputActionValue& Value)
 {
-	// input is a Vector2D
-	FVector2D MovementVector = Value.Get<FVector2D>();
+	if (CapsuleComponent == nullptr)
+		return;
 
-	if (Controller != nullptr)
-	{
-		FVector2d DirectionInput = Value.Get<FVector2d>();
-		DirectionInput.Normalize();
+	FVector2d DirectionInput = Value.Get<FVector2d>();
+	DirectionInput.Normalize();
 
-		FVector Direction = ViewOrientation.RotateVector(FVector(DirectionInput, 0.f));
+	FVector Direction = ViewOrientation.RotateVector(FVector(DirectionInput, 0.f));
 
-		double mSpeedScale = 15.f;
+	CapsuleComponent->SetPhysicsLinearVelocity(Direction * LocomotionSpeed, true);
 
-		// add movement 
-		AddMovementInput(Direction, mSpeedScale);
-	}
+	//GetWorld()->LineTraceMultiByChannel()
 }
+
+constexpr float ViewRotationSpeed = 0.04f;
 
 void AMainCharacter::Look(const FInputActionValue& Value)
 {
-	FVector2D ViewRotationSpeed = {0.04f, 0.04f};
-
 	if (Value[1])
 	{
-		const FVector TiltAxis = { 0.f,-1.f,0.f };
-		ViewOrientation *= FQuat(TiltAxis, ViewRotationSpeed.Y * Value[1]);
+		ViewOrientation *= FQuat({0.f,-1.f,0.f}, Value[1] * ViewRotationSpeed);
 	}
+
 	if (Value[0])
 	{
-		const FVector PanAxis = ViewOrientation.Inverse().RotateVector({ 0.f,0.f,1.f });
-		ViewOrientation *= FQuat(PanAxis, ViewRotationSpeed.X * Value[0]);
+		FVector YawAxis = ViewOrientation.UnrotateVector(-GravityDirection);
+		ViewOrientation *= FQuat(YawAxis, Value[0] * ViewRotationSpeed);
 	}
 
-	if (Controller != nullptr)
+	UpdateView();
+}
+
+void AMainCharacter::UpdateView()
+{
+	if (Controller == nullptr)
+		return;
+
+	Controller->SetControlRotation(ViewOrientation.Rotator());
+	CameraComponent->SetWorldRotation(ViewOrientation);
+}
+
+void AMainCharacter::OnBodySleep(UPrimitiveComponent* WakingComponent, FName BoneName)
+{
+	FU_SCREEN_LOG("sleep");
+	bIsBodyWake = false;
+}
+
+void AMainCharacter::OnBodyWake(UPrimitiveComponent* WakingComponent, FName BoneName)
+{
+	FU_SCREEN_LOG("wake");
+	bIsBodyWake = true;
+}
+
+void AMainCharacter::GravityControlTick()
+{	
+	FHitResult HitResult;
+
+	FVector TraceA = GetActorLocation();
+	FVector TraceB = TraceA + (1.4f * GravityDirection * CapsuleComponent->GetScaledCapsuleHalfHeight());
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(Cast<AActor>(this));
+	
+	GetWorld()->LineTraceSingleByChannel(
+		HitResult, 
+		TraceA,
+		TraceB,
+		ECollisionChannel::ECC_WorldDynamic,
+		QueryParams
+	);
+	
+	if (HitResult.bBlockingHit)
 	{
-		Controller->SetControlRotation(ViewOrientation.Rotator());
-		FirstPersonCamera->SetWorldRotation(ViewOrientation);
-	}
+		float Dot = HitResult.Normal.Dot(GravityDirection);
 
+		bool DirectionsAreDifferent = Dot != -1.f;
+
+		if (DirectionsAreDifferent)
+		{
+			bool DifferencePassThreshold = Dot <= -FMath::Cos(FMath::DegreesToRadians(GravityAngleThreshold));
+
+			if (DifferencePassThreshold)
+			{
+				FVector NewGravityDirection = -HitResult.Normal;
+				FQuat OrientationDifference = FQuat::FindBetweenNormals(GravityDirection, NewGravityDirection);
+				
+				GravityDirection = NewGravityDirection;
+				
+				ViewOrientation = OrientationDifference * ViewOrientation;
+				UpdateView();
+
+			}
+			auto ThresholdCos = FString::SanitizeFloat(-FMath::Cos(FMath::DegreesToRadians(GravityAngleThreshold)));
+			FU_SCREEN_LOG("ThresholdCos: %s", *ThresholdCos);
+			auto LogMsg = FString::SanitizeFloat(Dot);
+			FU_SCREEN_LOG("Dot: %s", *LogMsg);
+		}
+	}
 }

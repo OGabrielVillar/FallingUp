@@ -19,3 +19,9 @@ DECLARE_LOG_CATEGORY_EXTERN(LogFallingUpInput, All, All);
 #define FU_INPUT_LOG(string, ...) { UE_LOG(LogFallingUpInput, Log, TEXT(string), __VA_ARGS__); }
 
 #define FU_ERROR(string, ...) RT_LOG("ERROR: " string, __VA_ARGS__)
+
+template<typename T>
+inline constexpr UE::Math::TQuat<T> QuatDistance(const UE::Math::TQuat<T>& From, const UE::Math::TQuat<T>& To)
+{
+	return To.Inverse() * From;
+}
