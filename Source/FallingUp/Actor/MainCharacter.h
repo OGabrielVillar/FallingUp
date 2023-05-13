@@ -44,6 +44,7 @@ private:
 	void OnBodySleep(UPrimitiveComponent* WakingComponent, FName BoneName);
 	UFUNCTION()
 	void OnBodyWake(UPrimitiveComponent* WakingComponent, FName BoneName);
+	void OnBodyHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
 
 	void GravityControlTick();
 
